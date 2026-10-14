@@ -1,101 +1,86 @@
-const GROQ_MODEL = "llama-3.3-70b-versatile";
+import Groq from 'groq-sdk';
 
-const SYSTEM_PROMPT = 
-  "Ты — Джарвис, вежливый голосовой ассистент. " +
-  "Обращайся к пользователю уважительно (сэр). " +
-  "Отвечай строго кратко: не более 1-2 предложений разговорным языком для голоса. " +
-  "Не используй Markdown, звездочки, решетки, списки и внутренние рассуждения.";
+const groq = new Groq({
+  apiKey: process.env.GROQ_API_KEY,
+});
 
-function buildResponse(text, endSession = false, history = []) {
-  return {
-    version: "1.0",
-    response: {
-      text: String(text || "").trim().slice(0, 1000),
-      end_session: endSession
-    },
-    session_state: { history }
-  };
-}
-
-module.exports = async (req, res) => {
-  if (req.method !== "POST") {
-    return res.status(200).send("Alice Groq OK");
+export default async function handler(req, res) {
+  // Обработка только POST-запросов от Яндекс Диалогов
+  if (req.method !== 'POST') {
+    return res.status(200).json({ status: 'ok', message: 'Webhook is active' });
   }
-
-  let body = req.body;
-  if (typeof body === "string") {
-    try {
-      body = JSON.parse(body);
-    } catch (e) {
-      body = {};
-    }
-  }
-  body = body || {};
-
-  const request = body.request || {};
-  const session = body.session || {};
-  const state = body.state || {};
-
-  const isNew = Boolean(session.new);
-  const userText = (request.original_utterance  request.command  "").trim();
-  const history = Array.isArray(state?.session?.history) ? state.session.history : [];
-
-  if (isNew || !userText) {
-    return res.status(200).json(
-      buildResponse("Джарвис на связи, сэр. Все системы работают штатно. Чем могу помочь?", false, [])
-    );
-  }
-
-  const apiKey = (process.env.GROQ_API_KEY || "").trim();
-  if (!apiKey) {
-    return res.status(200).json(
-      buildResponse("Сэр, не обнаружен ключ GROQ_API_KEY в настройках Vercel.", false, history)
-    );
-  }
-
-  const messages = [
-    { role: "system", content: SYSTEM_PROMPT },
-    ...history.slice(-4).map((item) => ({
-      role: item.role === "assistant" ? "assistant" : "user",
-      content: String(item.text || "").slice(0, 300)
-    })),
-    { role: "user", content: userText }
-  ];
 
   try {
-    const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": Bearer ${apiKey}
-      },
-      body: JSON.stringify({
-        model: GROQ_MODEL,
-        messages: messages,
-        temperature: 0.6,
-        max_tokens: 120
-      })
-    });
+    const { request, session, version } = req.body || {};
 
-    if (!groqRes.ok) {
-      return res.status(200).json(
-        buildResponse("Сэр, связь с сервером интеллекта временно нестабильна.", false, history)
-      );
+    // Проверяем входящую фразу пользователя
+    const userText = request?.command  request?.original_utterance  '';
+
+    // Приветствие при первом запуске навыка
+    if (session?.new && !userText) {
+      return res.status(200).json({
+        version: version || '1.0',
+        session: session || {},
+        response: {
+          text: 'Здравствуйте! Я ваш голосовой помощник Джарвис на базе нейросети. Чем могу помочь?',
+          end_session: false,
+        },
+      });
     }
 
-    const data = await groqRes.json();
-    const reply = data.choices?.[0]?.message?.content?.trim() || "Слушаю вас, сэр.";
+    // Если запрос пустой
+    if (!userText.trim()) {
+      return res.status(200).json({
+        version: version || '1.0',
+        session: session || {},
+        response: {
+          text: 'Слушаю вас, задайте вопрос.',
+          end_session: false,
+        },
+      });
+    }
 
-    const nextHistory = [
-      ...history,
-      { role: "user", text: userText },
-      { role: "assistant", text: reply }
-    ].slice(-4);
+    // Запрос к Groq API
+    const completion = await groq.chat.completions.create({
+      messages: [
+        {
+          role: 'system',
+          content: 'Ты — Джарвис, умный и вежливый голосовой ассистент. Отвечай кратко, емко и по делу на русском языке, так как ответ будет озвучен голосом Алисы. Избегай сложных таблиц, markdown-ссылок и спецсимволов.',
+        },
+        {
+          role: 'user',
+          content: userText,
+        },
+      ],
+      model: 'llama-3.3-70b-versatile', // Либо llama3-8b-8192
+    });
 
-    return res.status(200).json(buildResponse(reply, false, nextHistory));
-  } catch (err) {
-    return res.status(200).json(
-      buildResponse("Прошу прощения, сэр, заминка на линии. Повторите запрос.", false, history)
-    );
+    let answer = completion.choices[0]?.message?.content || 'Не удалось получить ответ от модели.';
+
+    // Алиса ограничивает длину одного ответа максимум в 1024 символа
+    if (answer.length > 1000) {
+      answer = answer.slice(0, 997) + '...';
+    }
+
+    // Возвращаем ответ в формате Яндекс Диалогов
+    return res.status(200).json({
+      version: version || '1.0',
+      session: session || {},
+      response: {
+        text: answer,
+        end_session: false,
+      },
+    });
+  } catch (error) {
+    console.error('Ошибка обработки запроса:', error);
+
+    return res.status(200).json({
+      version: req.body?.version || '1.0',
+      session: req.body?.session || {},
+      response: {
+        text: 'Произошла ошибка при обращении к нейросети. Пожалуйста, попробуйте еще раз позже.',
+        end_session: false,
+      },
+    });
   }
-};
+}
