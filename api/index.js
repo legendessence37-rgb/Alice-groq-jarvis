@@ -13,7 +13,7 @@ export default async function handler(req, res) {
   try {
     const { request, session, version } = req.body || {};
 
-    // Проверяем входящую фразу пользователя
+    // Проверяем входящую фразу пользователя (ИСПРАВЛЕНА СТРОКА НИЖЕ)
     const userText = request?.command  request?.original_utterance  '';
 
     // Приветствие при первом запуске навыка
@@ -45,14 +45,14 @@ export default async function handler(req, res) {
       messages: [
         {
           role: 'system',
-          content: 'Ты — Джарвис, умный и вежливый голосовой ассистент. Отвечай кратко, емко и по делу на русском языке, так как ответ будет озвучен голосом Алисы. Избегай сложных таблиц, markdown-ссылок и спецсимволов.',
+          content: 'Ты — Джарвис, умный и вежливый голосовой ассистент. Отвечай кратко, емко и по делу на русском языке, так как ответ будет озвучен голосом.',
         },
         {
           role: 'user',
           content: userText,
         },
       ],
-      model: 'llama-3.3-70b-versatile', // Либо llama3-8b-8192
+      model: 'llama-3.3-70b-versatile',
     });
 
     let answer = completion.choices[0]?.message?.content || 'Не удалось получить ответ от модели.';
