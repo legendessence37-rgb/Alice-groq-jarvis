@@ -1,4 +1,9 @@
 {
   "name": "alice-groq-jarvis",
-  "version": "1.0.0"
+  "version": "1.0.0",
+  "type": "module",
+  "main": "api/index.js",
+  "dependencies": {
+    "groq-sdk": "^0.7.0"
+  }
 }
