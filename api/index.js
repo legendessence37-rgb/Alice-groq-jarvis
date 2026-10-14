@@ -74,7 +74,7 @@ export default async function handler(req, res) {
     const lowerText = userText.toLowerCase();
 
     // Команда полной очистки памяти
-    if (lowerText.includes('очисти память')  lowerText.includes('забудь все')  lowerText.includes('забудь всё')) {
+    if (lowerText.includes('забудь')) {
       serverMemory[userId] = [];
       return res.status(200).json({
         version: version,
@@ -249,9 +249,6 @@ export default async function handler(req, res) {
       version: version,
       session: session,
       session_state: {
-        history: history,
-      },
-      user_state_update: {
         history: history,
       },
       response: {
