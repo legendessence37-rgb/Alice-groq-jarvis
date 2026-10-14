@@ -61,8 +61,8 @@ export default async function handler(req, res) {
       });
     }
 
-    const now = new Date();
-    const currentDateString = now.toLocaleString('ru-RU', {
+    // Безопасное получение даты и времени (без toLocaleString, который ломается при копировании)
+    const formatter = new Intl.DateTimeFormat('ru-RU', {
       timeZone: 'Europe/Moscow',
       weekday: 'long',
       year: 'numeric',
@@ -71,6 +71,7 @@ export default async function handler(req, res) {
       hour: '2-digit',
       minute: '2-digit',
     });
+    const currentDateString = formatter.format(new Date());
 
     let liveDataContext = '';
     const weatherTriggers = ['погод', 'температур', 'градус', 'дождь', 'снег', 'ветер', 'улиц'];
@@ -78,44 +79,47 @@ export default async function handler(req, res) {
 
     if (isWeatherQuery) {
       try {
-        let cityQuery = 'Мурино';
-        const words = lowerText.replace(/[^а-яёa-z\s-]/gi, '').split(/\s+/);
-        const stopWords = [
-          'какая', 'какой', 'погода', 'температура', 'сейчас', 'сегодня',
-          'завтра', 'в', 'во', 'на', 'улице', 'градусов', 'скажи', 'джарвис',
-          'сэр', 'а', 'что', 'с', 'погодой', 'там', 'будет'
-        ];
-        const cityWords = words.filter(function(w) {
-          return w.length > 2 && !stopWords.includes(w);
-        });
-
-        if (cityWords.length > 0) {
-          cityQuery = cityWords[cityWords.length - 1];
-        }
-
         let lat = 60.0494;
         let lon = 30.4464;
         let resolvedName = 'Мурино (Санкт-Петербург)';
 
-        if (!cityQuery.startsWith('мурин') && !cityQuery.startsWith('питер') && !cityQuery.startsWith('санкт')) {
-          const geoUrl = 'https://geocoding-api.open-meteo.com/v1/search?name=' + encodeURIComponent(cityQuery) + '&count=1&language=ru';
-          const geoRes = await fetch(geoUrl);
-          const geoData = await geoRes.json();
-          if (geoData.results && geoData.results.length > 0) {
-            lat = geoData.results[0].latitude;
-            lon = geoData.results[0].longitude;
-            resolvedName = geoData.results[0].name;
-          }
-          const weatherUrl = 'https://api.open-meteo.com/v1/forecast?latitude=' + lat + '&longitude=' + lon + '&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m&timezone=Europe%2FMoscow';
+        if (lowerText.includes('москв')) {
+          lat = 55.7558;
+          lon = 37.6173;
+          resolvedName = 'Москва';
+        }
+
+        const weatherUrl = 'https://api.open-meteo.com/v1/forecast?latitude=' + lat + '&longitude=' + lon + '&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m&timezone=Europe%2FMoscow';
         const weatherRes = await fetch(weatherUrl);
         const weatherData = await weatherRes.json();
 
         if (weatherData && weatherData.current) {
           const cur = weatherData.current;
-          liveDataContext = 'ДАННЫЕ МЕТЕОРАДАРА для ' + resolvedName + ': температура ' + Math.round(cur.temperature_2m) + ' градусов, ощущается как ' + Math.round(cur.apparent_temperature) + ', влажность ' + cur.relative_humidity_2m + '%, ветер ' + cur.wind_speed_10m + ' км/ч.';
+          liveDataContext = 'ДАННЫЕ МЕТЕОРАДАРА для ' + resolvedName + ': температура ' + Math.round(cur.temperature_2m) + ' градусов Цельсия, ощущается как ' + Math.round(cur.apparent_temperature) + ', влажность ' + cur.relative_humidity_2m + '%, ветер ' + cur.wind_speed_10m + ' км/ч.';
         }
       } catch (wErr) {
         console.error('Ошибка погоды:', wErr);
+      }
+    }
+    if (!liveDataContext && process.env.SERPER_API_KEY) {
+      try {
+        const serperRes = await fetch('https://google.serper.dev/search', {
+          method: 'POST',
+          headers: {
+            'X-API-KEY': process.env.SERPER_API_KEY,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ q: userText, gl: 'ru', hl: 'ru' }),
+        });
+        const serperData = await serperRes.json();
+        if (serperData.organic && serperData.organic.length > 0) {
+          const snippets = serperData.organic.slice(0, 3).map(function(item) {
+            return item.title + ': ' + item.snippet;
+          }).join(' | ');
+          liveDataContext = 'ДАННЫЕ ИЗ ИНТЕРНЕТА: ' + snippets;
+        }
+      } catch (sErr) {
+        console.error('Ошибка Serper:', sErr);
       }
     }
 
@@ -144,14 +148,14 @@ export default async function handler(req, res) {
       }
     }
 
-    const systemPrompt = 'Ты — ДЖАРВИС, высокоинтеллектуальный ИИ Тони Старка из фильма «Железный человек». ' +
+    const systemPrompt = 'Ты — ДЖАРВИС, высокоинтеллектуальный ИИ Тони Старка из фильма Железный человек. ' +
       'СЕЙЧАС: ' + currentDateString + ' (14 октября 2026 года). ' +
       (liveDataContext ? liveDataContext + ' ' : '') +
       'Стиль: безупречно вежливый, спокойный, с легкой британской иронией. ' +
       'Правила: ' +
       '1. ОБЯЗАТЕЛЬНО обращайся к пользователю «сэр» в каждом ответе. ' +
-      '2. Помни контекст прошлых сообщений диалога. ' +
-      '3. Отвечай ТОЛЬКО на чистом русском языке, кратко (1–3 предложения), без спецсимволов (*, #, -).';
+      '2. Помни контекст прошлых сообщений нашего диалога. ' +
+      '3. Отвечай ТОЛЬКО на чистом русском языке, кратко (1-3 предложения), без звездочек и решеток.';
 
     const messagesForGroq = [{ role: 'system', content: systemPrompt }];
     for (let j = 0; j < history.length; j++) {
@@ -170,18 +174,21 @@ export default async function handler(req, res) {
       answer = completion.choices[0].message.content;
     }
 
-    answer = answer.replace(/<think>[\s\S]*?<\/think>/gi, '');
-    answer = answer.replace(/[*#_~`]/g, '').trim();
+    if (answer.includes('</think>')) {
+      const parts = answer.split('</think>');
+      answer = parts[parts.length - 1];
+    }
+    answer = answer.split('*').join('').split('#').join('').trim();
 
     if (answer.length > 900) {
       answer = answer.slice(0, 897) + '...';
     }
 
-    // Делаем красивую озвучку с паузами дворецкого и правильным ударением на «сэр»
     const ttsAnswer = answer
-      .replace(/сэр/gi, 'с+эр')
-      .replace(/\.\s+/g, '. sil <[250]> ')
-      .replace(/,\s+/g, ', sil <[120]> ');
+      .split('сэр').join('с+эр')
+      .split('Сэр').join('С+эр')
+      .split('. ').join('. sil <[250]> ')
+      .split(', ').join(', sil <[120]> ');
 
     history.push({ role: 'user', content: userText });
     history.push({ role: 'assistant', content: answer });
@@ -194,7 +201,7 @@ export default async function handler(req, res) {
       session: session,
       session_state: {
         history: history,
-      },
+        },
       response: {
         text: answer,
         tts: ttsAnswer,
@@ -213,4 +220,5 @@ export default async function handler(req, res) {
     });
   }
 }
-        }
+
+    // Поиск в интернете через Serper (если добавлен SERPER_API_KEY)
