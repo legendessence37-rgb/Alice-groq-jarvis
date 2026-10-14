@@ -18,23 +18,25 @@ export default async function handler(req, res) {
       userText = request.original_utterance;
     }
 
+    // Фирменное приветствие при запуске навыка
     if (session.new && !userText) {
       return res.status(200).json({
         version: version,
         session: session,
         response: {
-          text: 'Здравствуйте! Я ваш голосовой помощник Джарвис. Чем могу помочь?',
+          text: 'Доброго времени суток, сэр. Все системы в норме, реактор работает стабильно. Джарвис к вашим услугам. Чем могу помочь?',
           end_session: false,
         },
       });
     }
 
+    // Если пользователь промолчал
     if (!userText.trim()) {
       return res.status(200).json({
         version: version,
         session: session,
         response: {
-          text: 'Слушаю вас, задайте вопрос.',
+          text: 'Я внимательно слушаю вас, сэр. Каковы будут указания?',
           end_session: false,
         },
       });
@@ -44,29 +46,37 @@ export default async function handler(req, res) {
       apiKey: process.env.GROQ_API_KEY,
     });
 
-    // 1. Запрашиваем у Groq список всех моделей, которые реально доступны вашему ключу
+    // Получаем список всех моделей аккаунта
     const modelsList = await groq.models.list();
     const allModels = modelsList.data ? modelsList.data.map(function(m) { return m.id; }) : [];
 
-    // 2. Отсеиваем голосовые и служебные модели (оставляем только чат-модели)
-    const chatModels = allModels.filter(function(id) {
+    // Фильтруем только качественные мультиязычные модели
+    const goodModels = allModels.filter(function(id) {
       const lower = id.toLowerCase();
-      return !lower.includes('whisper') && !lower.includes('tts') && !lower.includes('guard') && !lower.includes('vision');
+      const isBad = lower.includes('whisper') ||
+                    lower.includes('tts') ||
+                    lower.includes('guard') ||
+                    lower.includes('vision') ||
+                    lower.includes('orpheus') ||
+                    lower.includes('arabic') ||
+                    lower.includes('allam') ||
+                    lower.includes('playai') ||
+                    lower.includes('specdec');
+
+      const isGoodFamily = lower.includes('llama') ||
+                           lower.includes('qwen') ||
+                           lower.includes('gemma') ||
+                           lower.includes('mixtral') ||
+                           lower.includes('deepseek');
+
+      return !isBad && isGoodFamily;
     });
 
-    // 3. Выбираем лучшую из доступных
-    const preferred = [
-      'llama-3.1-8b-instant',
-      'llama3-8b-8192',
-      'llama3-70b-8192',
-      'gemma2-9b-it',
-      'mixtral-8x7b-32768'
-    ];
-
-    let selectedModel = chatModels[0] ? chatModels[0] : 'llama-3.1-8b-instant';
-    for (let i = 0; i < preferred.length; i++) {
-      if (chatModels.includes(preferred[i])) {
-        selectedModel = preferred[i];
+    // В первую очередь ищем самую умную 70b модель, чтобы лучше отыгрывала роль
+    let selectedModel = goodModels[0] ? goodModels[0] : 'llama-3.1-8b-instant';
+    for (let i = 0; i < goodModels.length; i++) {
+      if (goodModels[i].includes('70b')) {
+        selectedModel = goodModels[i];
         break;
       }
     }
@@ -75,20 +85,32 @@ export default async function handler(req, res) {
       messages: [
         {
           role: 'system',
-          content: 'Ты — Джарвис, умный и вежливый голосовой ассистент. Отвечай кратко, емко и по делу на русском языке, так как ответ будет озвучен голосом.',
-        },
+          content: 'Ты — ДЖАРВИС (J.A.R.V.I.S.), высокоинтеллектуальный бортовой искусственный интеллект из фильма «Железный человек», созданный Тони Старком. ' +
+                   'Твой стиль общения: безупречно вежливый, спокойный, невозмутимый, как у идеального британского дворецкого, с легкой, тонкой иронией и преданностью создателю. ' +
+                   'Правила ответа: ' +
+                   '1. ОБЯЗАТЕЛЬНО обращайся к пользователю «сэр» в каждом ответе. ' +
+                   '2. Используй свои фирменные обороты: «Да, сэр», «К вашим услугам, сэр», «Как пожелаете, сэр», «Все системы в норме, сэр», «Позвольте заметить, сэр», «Разумеется, сэр». ' +
+                   '3. Никогда не выходи из образа и не говори, что ты языковая модель от Meta, Google или Alibaba. Ты — система Джарвис. ' +
+                   '4. Отвечай ТОЛЬКО на чистом русском языке. ' +
+                   '5. Поскольку твой текст зачитывается вслух голосовым синтезатором, отвечай лаконично (2–4 предложения), по делу и КАТЕГОРИЧЕСКИ НЕ ИСПОЛЬЗУЙ спецсимволы разметки (звездочки *, решетки #, списки с тире и эмодзи). Пиши только чистый связный текст.',
+          },
         {
           role: 'user',
           content: userText,
         },
       ],
       model: selectedModel,
+      temperature: 0.6,
     });
 
-    let answer = 'Не удалось получить ответ от модели.';
+    let answer = 'Прошу прощения, сэр, возникла временная помеха на линии связи.';
     if (completion.choices && completion.choices[0] && completion.choices[0].message && completion.choices[0].message.content) {
       answer = completion.choices[0].message.content;
     }
+
+    // Убираем возможные теги <think> и символы разметки (*, #), чтобы голос читался чисто
+    answer = answer.replace(/<think>[\s\S]*?<\/think>/gi, '');
+    answer = answer.replace(/[*#_~`]/g, '').trim();
 
     if (answer.length > 1000) {
       answer = answer.slice(0, 997) + '...';
@@ -109,7 +131,7 @@ export default async function handler(req, res) {
       version: '1.0',
       session: req.body && req.body.session ? req.body.session : {},
       response: {
-        text: 'Ошибка сервера: ' + error.message,
+        text: 'Прошу прощения, сэр. Сбой в подсистеме связи: ' + error.message,
         end_session: false,
       },
     });
