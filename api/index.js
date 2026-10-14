@@ -7,13 +7,9 @@ export default async function handler(req, res) {
 
   try {
     const body = req.body ? req.body : {};
-    const request = body.request ? req.request : (body.request ? body.request : {});
+    const request = body.request ? body.request : {};
     const session = body.session ? body.session : {};
     const version = body.version ? body.version : '1.0';
-
-    // Достаем историю прошлых сообщений из памяти текущей сессии Яндекса
-    const state = body.state && body.state.session ? body.state.session : {};
-    let history = Array.isArray(state.history) ? state.history : [];
 
     let userText = '';
     if (request.command) {
@@ -22,41 +18,23 @@ export default async function handler(req, res) {
       userText = request.original_utterance;
     }
 
-    // Приветствие при первом запуске
     if (session.new && !userText) {
       return res.status(200).json({
         version: version,
         session: session,
-        session_state: { history: [] },
         response: {
-          text: 'Доброго времени суток, сэр. Все системы в норме, модули памяти и метеорадар активны. Джарвис к вашим услугам.',
+          text: 'Доброго времени суток, сэр. Все системы в норме, метеорадар и спутники связи активны. Джарвис к вашим услугам.',
           end_session: false,
         },
       });
     }
 
-    // Если пользователь промолчал
     if (!userText.trim()) {
       return res.status(200).json({
         version: version,
         session: session,
-        session_state: { history: history },
         response: {
           text: 'Я внимательно слушаю вас, сэр. Каковы будут указания?',
-          end_session: false,
-        },
-      });
-    }
-
-    // Команда очистки памяти (если захотите начать тему заново)
-    const lowerText = userText.toLowerCase();
-    if (lowerText.includes('очисти память')  lowerText.includes('забудь все')  lowerText.includes('забудь всё')) {
-      return res.status(200).json({
-        version: version,
-        session: session,
-        session_state: { history: [] },
-        response: {
-          text: 'Как пожелаете, сэр. Буфер кратковременной памяти текущего диалога полностью очищен.',
           end_session: false,
         },
       });
@@ -74,8 +52,10 @@ export default async function handler(req, res) {
       minute: '2-digit',
     });
 
-    // 2. Блок живой погоды (Open-Meteo)
+    // 2. Блок живой погоды (бесплатно через Open-Meteo без API-ключей)
     let liveDataContext = '';
+    const lowerText = userText.toLowerCase();
+
     if (
       lowerText.includes('погод') ||
       lowerText.includes('температур') ||
@@ -86,8 +66,11 @@ export default async function handler(req, res) {
       lowerText.includes('улиц')
     ) {
       try {
+        // Определяем город из фразы (по умолчанию — Мурино)
         let cityQuery = 'Мурино';
-        const words = lowerText.replace(/[^а-яёa-z\s-]/gi, '').split(/\s+/);
+        const words = lowerText
+          .replace(/[^а-яёa-z\s-]/gi, '')
+          .split(/\s+/);
         const stopWords = [
           'какая', 'какой', 'погода', 'температура', 'сейчас', 'сегодня',
           'завтра', 'в', 'во', 'на', 'улице', 'градусов', 'скажи', 'джарвис',
@@ -101,10 +84,12 @@ export default async function handler(req, res) {
           cityQuery = cityWords[cityWords.length - 1];
         }
 
+        // Координаты для Мурино / СПб по умолчанию
         let lat = 60.0494;
         let lon = 30.4464;
         let resolvedName = 'Мурино (Санкт-Петербург)';
 
+        // Если назван другой город — ищем его координаты через геокодер
         if (!cityQuery.startsWith('мурин') && !cityQuery.startsWith('питер') && !cityQuery.startsWith('санкт')) {
           const geoUrl = 'https://geocoding-api.open-meteo.com/v1/search?name=' + encodeURIComponent(cityQuery) + '&count=1&language=ru';
           const geoRes = await fetch(geoUrl);
@@ -115,6 +100,7 @@ export default async function handler(req, res) {
             resolvedName = geoData.results[0].name;
           }
         }
+
         const weatherUrl = 'https://api.open-meteo.com/v1/forecast?latitude=' + lat + '&longitude=' + lon + '&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,weather_code&timezone=Europe%2FMoscow';
         const weatherRes = await fetch(weatherUrl);
         const weatherData = await weatherRes.json();
@@ -133,7 +119,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // 3. Поиск в Google через Serper (если подключен SERPER_API_KEY)
+    // 3. Поиск в Google через Serper (если в Vercel добавлен SERPER_API_KEY)
     if (!liveDataContext && process.env.SERPER_API_KEY) {
       try {
         const serperRes = await fetch('https://google.serper.dev/search', {
@@ -199,25 +185,23 @@ export default async function handler(req, res) {
       'Правила: ' +
       '1. ОБЯЗАТЕЛЬНО обращайся к пользователю «сэр» в каждом ответе. ' +
       '2. Используй фразы «Да, сэр», «К вашим услугам, сэр», «По данным моих сенсоров, сэр», «Все системы в норме, сэр». ' +
-      '3. Учитывай историю нашего диалога и помни, о чем мы говорили только что. ' +
+      '3. Если переданы ДАННЫЕ МЕТЕОРАДАРА или ИНТЕРНЕТА — используй их и отвечай уверенно, никогда не говори, что у тебя нет доступа к реальному времени. ' +
       '4. Отвечай ТОЛЬКО на чистом русском языке, кратко (2–3 предложения), без спецсимволов (*, #, -).';
-    // Собираем массив сообщений: Системная инструкция + История прошлых реплик + Новый вопрос
-    const messagesForGroq = [
-      { role: 'system', content: systemPrompt }
-    ];
-
-    for (let j = 0; j < history.length; j++) {
-      messagesForGroq.push(history[j]);
-    }
-
-    messagesForGroq.push({ role: 'user', content: userText });
 
     const completion = await groq.chat.completions.create({
-      messages: messagesForGroq,
+      messages: [
+        {
+          role: 'system',
+          content: systemPrompt,
+        },
+        {
+          role: 'user',
+          content: userText,
+        },
+      ],
       model: selectedModel,
       temperature: 0.5,
     });
-
     let answer = 'Прошу прощения, сэр, возникла временная помеха на линии связи.';
     if (completion.choices && completion.choices[0] && completion.choices[0].message && completion.choices[0].message.content) {
       answer = completion.choices[0].message.content;
@@ -230,19 +214,9 @@ export default async function handler(req, res) {
       answer = answer.slice(0, 997) + '...';
     }
 
-    // Сохраняем текущую реплику пользователя и ответ Джарвиса в историю (храним последние 10 реплик)
-    history.push({ role: 'user', content: userText });
-    history.push({ role: 'assistant', content: answer });
-    if (history.length > 10) {
-      history = history.slice(history.length - 10);
-    }
-
     return res.status(200).json({
       version: version,
       session: session,
-      session_state: {
-        history: history,
-      },
       response: {
         text: answer,
         end_session: false,
