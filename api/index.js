@@ -1,106 +1,85 @@
 const GROQ_MODEL = "llama-3.3-70b-versatile";
 
 const SYSTEM_PROMPT = 
-  "Ты — Джарвис, вежливый голосовой ассистент. " +
-  "Обращайся к пользователю уважительно (сэр). " +
-  "Отвечай строго кратко: не более 1-2 предложений простым разговорным языком для голоса. " +
-  "Никаких markdown, звездочек, кавычек, решеток, списков и рассуждений.";
+  "Ты — голосовой ассистент Джарвис. Отвечай вежливо, называй пользователя 'сэр'. " +
+  "Отвечай строго кратко: 1-2 предложения простым языком без markdown, списков и звездочек.";
 
-function buildResponse(text, endSession = false, history = []) {
-  return {
+function reply(res, text, history = []) {
+  return res.status(200).json({
     version: "1.0",
     response: {
-      text: String(text || "").trim().slice(0, 1000),
-      end_session: endSession
+      text: String(text || "Слушаю вас, сэр.").slice(0, 1000),
+      end_session: false
     },
     session_state: { history }
-  };
+  });
 }
 
 export default async function handler(req, res) {
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-
-  if (req.method !== "POST") {
-    return res.status(200).send("Alice Groq Webhook OK");
-  }
-
-  let body = req.body;
-  if (typeof body === "string") {
-    try {
-      body = JSON.parse(body);
-    } catch {
-      body = {};
-    }
-  }
-  body = body || {};
-
-  const request = body.request || {};
-  const session = body.session || {};
-  const state = body.state || {};
-
-  const isNew = Boolean(session.new);
-  const userText = (request.original_utterance  request.command  "").trim();
-  const history = Array.isArray(state?.session?.history) ? state.session.history : [];
-
-  if (isNew || !userText) {
-    return res.status(200).json(
-      buildResponse("Джарвис на связи, сэр. Все системы работают в штатном режиме. Чем могу помочь?", false, [])
-    );
-  }
-
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) {
-    return res.status(200).json(
-      buildResponse("Сэр, в настройках Vercel отсутствует ключ GROQ_API_KEY.", false, history)
-    );
-  }
-
-  const messages = [
-    { role: "system", content: SYSTEM_PROMPT },
-    ...history.slice(-4).map(item => ({
-      role: item.role === "assistant" ? "assistant" : "user",
-      content: String(item.text || "").slice(0, 300)
-    })),
-    { role: "user", content: userText }
-  ];
-
   try {
+    if (req.method !== "POST") {
+      return res.status(200).send("OK");
+    }
+
+    const body = req.body || {};
+    const request = body.request || {};
+    const session = body.session || {};
+    const state = body.state || {};
+
+    const userText = (request.original_utterance  request.command  "").trim();
+    const history = Array.isArray(state?.session?.history) ? state.session.history : [];
+
+    // При открытии навыка или пустом вводе
+    if (session.new || !userText) {
+      return reply(res, "Джарвис на связи, сэр. Чем могу помочь?", []);
+    }
+
+    const apiKey = (process.env.GROQ_API_KEY || "").trim();
+    if (!apiKey) {
+      return reply(res, "Сэр, в настройках Vercel не указан ключ GROQ_API_KEY.", history);
+    }
+
+    const messages = [
+      { role: "system", content: SYSTEM_PROMPT },
+      ...history.slice(-4).map(h => ({
+        role: h.role === "assistant" ? "assistant" : "user",
+        content: String(h.text || "").slice(0, 300)
+      })),
+      { role: "user", content: userText }
+    ];
+
     const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": Bearer ${apiKey.trim()}
+        "Authorization": Bearer ${apiKey}
       },
       body: JSON.stringify({
         model: GROQ_MODEL,
         messages: messages,
         temperature: 0.6,
-        max_tokens: 120
+        max_tokens: 100
       })
     });
 
     if (!groqRes.ok) {
-      const errText = await groqRes.text();
-      console.error(Groq error ${groqRes.status}:, errText);
-      return res.status(200).json(
-        buildResponse("Сэр, возникли временные неполадки со связью с сервером интеллекта.", false, history)
-      );
+      const err = await groqRes.text();
+      console.error("Groq error:", err);
+      return reply(res, "Сэр, произошла ошибка на стороне нейросети.", history);
     }
 
     const data = await groqRes.json();
-    const reply = data.choices?.[0]?.message?.content?.trim() || "Слушаю вас, сэр.";
+    const answer = data.choices?.[0]?.message?.content?.trim() || "Слушаю вас, сэр.";
 
     const nextHistory = [
       ...history,
       { role: "user", text: userText },
-      { role: "assistant", text: reply }
+      { role: "assistant", text: answer }
     ].slice(-4);
 
-    return res.status(200).json(buildResponse(reply, false, nextHistory));
-  } catch (error) {
-    console.error("Handler error:", error);
-    return res.status(200).json(
-      buildResponse("Прошу прощения, сэр, заминка на линии. Повторите запрос.", false, history)
-    );
+    return reply(res, answer, nextHistory);
+  } catch (err) {
+    console.error("Crash error:", err);
+    return reply(res, "Прошу прощения, сэр, произошла непредвиденная ошибка.", []);
   }
 }
