@@ -1,5 +1,8 @@
 import Groq from 'groq-sdk';
 
+// Встроенная оперативная память на сервере (работает даже без галочки в Яндексе)
+const serverMemory = {};
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(200).json({ status: 'ok', message: 'Webhook is active' });
@@ -11,8 +14,28 @@ export default async function handler(req, res) {
     const session = body.session ? body.session : {};
     const version = body.version ? body.version : '1.0';
 
-    const state = body.state && body.state.session ? body.state.session : {};
-    let history = Array.isArray(state.history) ? state.history : [];
+    // Определяем уникальный ID пользователя
+    let userId = 'default_user';
+    if (session.user && session.user.user_id) {
+      userId = session.user.user_id;
+    } else if (session.application && session.application.application_id) {
+      userId = session.application.application_id;
+    } else if (session.session_id) {
+      userId = session.session_id;
+    }
+
+    // Достаем историю: сначала из Яндекс Хранилища (user / session), иначе из памяти сервера
+    const stateSession = body.state && body.state.session ? body.state.session : {};
+    const stateUser = body.state && body.state.user ? body.state.user : {};
+
+    let history = [];
+    if (Array.isArray(stateSession.history) && stateSession.history.length > 0) {
+      history = stateSession.history;
+    } else if (Array.isArray(stateUser.history) && stateUser.history.length > 0) {
+      history = stateUser.history;
+    } else if (Array.isArray(serverMemory[userId])) {
+      history = serverMemory[userId];
+    }
 
     let userText = '';
     if (request.command) {
@@ -21,13 +44,14 @@ export default async function handler(req, res) {
       userText = request.original_utterance;
     }
 
+    // Приветствие при запуске навыка
     if (session.new && !userText) {
       return res.status(200).json({
         version: version,
         session: session,
-        session_state: { history: [] },
+        session_state: { history: history.slice(-4) },
         response: {
-          text: 'Доброго времени суток, сэр. Все системы в норме. Джарвис к вашим услугам.',
+          text: 'Доброго времени суток, сэр. Все системы в норме, модули памяти активны. Джарвис к вашим услугам.',
           tts: 'Доброго времени суток, с+эр. sil <[250]> Все системы в норме. sil <[200]> Джарвис к вашим услугам.',
           end_session: false,
         },
@@ -38,7 +62,7 @@ export default async function handler(req, res) {
       return res.status(200).json({
         version: version,
         session: session,
-        session_state: { history: history },
+        session_state: { history: history.slice(-4) },
         response: {
           text: 'Я внимательно слушаю вас, сэр. Каковы будут указания?',
           tts: 'Я внимательно слушаю вас, с+эр. sil <[250]> Каковы будут указания?',
@@ -48,20 +72,24 @@ export default async function handler(req, res) {
     }
 
     const lowerText = userText.toLowerCase();
-    if (lowerText.includes('очисти память') || lowerText.includes('забудь')) {
+
+    // Команда полной очистки памяти
+    if (lowerText.includes('очисти память')  lowerText.includes('забудь все')  lowerText.includes('забудь всё')) {
+      serverMemory[userId] = [];
       return res.status(200).json({
         version: version,
         session: session,
         session_state: { history: [] },
+        user_state_update: { history: [] },
         response: {
-          text: 'Как пожелаете, сэр. Память текущего диалога очищена.',
-          tts: 'Как пожелаете, с+эр. sil <[250]> Память текущего диалога очищена.',
+          text: 'Как пожелаете, сэр. Память диалога полностью очищена.',
+          tts: 'Как пожелаете, с+эр. sil <[250]> Память диалога полностью очищена.',
           end_session: false,
         },
       });
     }
 
-    // Безопасное получение даты и времени (без toLocaleString, который ломается при копировании)
+    // Точное время и дата
     const formatter = new Intl.DateTimeFormat('ru-RU', {
       timeZone: 'Europe/Moscow',
       weekday: 'long',
@@ -82,7 +110,6 @@ export default async function handler(req, res) {
         let lat = 60.0494;
         let lon = 30.4464;
         let resolvedName = 'Мурино (Санкт-Петербург)';
-
         if (lowerText.includes('москв')) {
           lat = 55.7558;
           lon = 37.6173;
@@ -101,7 +128,16 @@ export default async function handler(req, res) {
         console.error('Ошибка погоды:', wErr);
       }
     }
-    if (!liveDataContext && process.env.SERPER_API_KEY) {
+
+    // Проверяем, не спрашивает ли пользователь про контекст самого диалога (тогда поиск в Google НЕ нужен!)
+    const memoryWords = ['помнишь', 'говорили', 'сказал', 'разговаривали', 'обсуждали', 'до этого', 'только что', 'о чем мы', 'о чём мы'];
+    const isMemoryQuestion = memoryWords.some(function(w) { return lowerText.includes(w); });
+
+    // Включаем поиск Serper только для информационных запросов (новости, факты, курсы и т.д.)
+    const searchTriggers = ['найди', 'поищи', 'загугли', 'новости', 'курс', 'сколько стоит', 'кто такой', 'что такое', 'когда выйдет', 'сюжет', 'фильм', 'сериал', 'игра', 'год', 'где находится'];
+    const needsSearch = searchTriggers.some(function(w) { return lowerText.includes(w); });
+
+    if (!liveDataContext && !isMemoryQuestion && needsSearch && process.env.SERPER_API_KEY) {
       try {
         const serperRes = await fetch('https://google.serper.dev/search', {
           method: 'POST',
@@ -113,10 +149,10 @@ export default async function handler(req, res) {
         });
         const serperData = await serperRes.json();
         if (serperData.organic && serperData.organic.length > 0) {
-          const snippets = serperData.organic.slice(0, 3).map(function(item) {
+          const snippets = serperData.organic.slice(0, 2).map(function(item) {
             return item.title + ': ' + item.snippet;
           }).join(' | ');
-          liveDataContext = 'ДАННЫЕ ИЗ ИНТЕРНЕТА: ' + snippets;
+          liveDataContext = 'СПРАВОЧНЫЕ ДАННЫЕ ИЗ ИНТЕРНЕТА: ' + snippets;
         }
       } catch (sErr) {
         console.error('Ошибка Serper:', sErr);
@@ -148,13 +184,22 @@ export default async function handler(req, res) {
       }
     }
 
+    // Формируем краткую сводку предыдущих реплик прямо в системный промпт, чтобы модель 100% их видела
+    let historySummary = '';
+    if (history.length > 0) {
+      const lines = history.map(function(item) {
+        return (item.role === 'user' ? 'Сэр сказал: ' : 'Джарвис ответил: ') + item.content;
+      });
+      historySummary = 'ИСТОРИЯ НАШЕГО ТЕКУЩЕГО РАЗГОВОРА (ты ОБЯЗАН её помнить): ' + lines.join(' / ') + '. ';
+    }
     const systemPrompt = 'Ты — ДЖАРВИС, высокоинтеллектуальный ИИ Тони Старка из фильма Железный человек. ' +
       'СЕЙЧАС: ' + currentDateString + ' (14 октября 2026 года). ' +
+      historySummary +
       (liveDataContext ? liveDataContext + ' ' : '') +
       'Стиль: безупречно вежливый, спокойный, с легкой британской иронией. ' +
       'Правила: ' +
       '1. ОБЯЗАТЕЛЬНО обращайся к пользователю «сэр» в каждом ответе. ' +
-      '2. Помни контекст прошлых сообщений нашего диалога. ' +
+      '2. Внимательно следи за ИСТОРИЕЙ РАЗГОВОРА. Никогда не говори, что мы только что начали общение, если в истории уже есть реплики! ' +
       '3. Отвечай ТОЛЬКО на чистом русском языке, кратко (1-3 предложения), без звездочек и решеток.';
 
     const messagesForGroq = [{ role: 'system', content: systemPrompt }];
@@ -180,8 +225,8 @@ export default async function handler(req, res) {
     }
     answer = answer.split('*').join('').split('#').join('').trim();
 
-    if (answer.length > 900) {
-      answer = answer.slice(0, 897) + '...';
+    if (answer.length > 800) {
+      answer = answer.slice(0, 797) + '...';
     }
 
     const ttsAnswer = answer
@@ -190,18 +235,25 @@ export default async function handler(req, res) {
       .split('. ').join('. sil <[250]> ')
       .split(', ').join(', sil <[120]> ');
 
-    history.push({ role: 'user', content: userText });
-    history.push({ role: 'assistant', content: answer });
-    if (history.length > 8) {
-      history = history.slice(history.length - 8);
+    // Обновляем историю (обрезаем каждую реплику до 140 символов, чтобы никогда не превысить лимит 1 КБ в Яндекс Хранилище!)
+    history.push({ role: 'user', content: userText.slice(0, 140) });
+    history.push({ role: 'assistant', content: answer.slice(0, 140) });
+    if (history.length > 6) {
+      history = history.slice(history.length - 6);
     }
+
+    // Сохраняем в серверную память
+    serverMemory[userId] = history;
 
     return res.status(200).json({
       version: version,
       session: session,
       session_state: {
         history: history,
-        },
+      },
+      user_state_update: {
+        history: history,
+      },
       response: {
         text: answer,
         tts: ttsAnswer,
@@ -220,5 +272,3 @@ export default async function handler(req, res) {
     });
   }
 }
-
-    // Поиск в интернете через Serper (если добавлен SERPER_API_KEY)
